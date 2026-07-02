@@ -1,0 +1,37 @@
+name: verify-snapshots
+
+# Statically validate every checkpoint snapshot under solutions/*-end/. Each is
+# a self-contained end-state a student copies into infra/; a snapshot that
+# doesn't fmt/init/validate is a broken checkpoint. Offline only — no backend,
+# no Azure creds, no apply.
+
+on:
+  pull_request:
+    paths:
+      - "solutions/**"
+      - "scripts/verify-snapshots.sh"
+      - ".github/workflows/verify-snapshots.yml"
+  push:
+    branches: [main]
+    paths:
+      - "solutions/**"
+      - "scripts/verify-snapshots.sh"
+      - ".github/workflows/verify-snapshots.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  verify-snapshots:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.13.x
+          terraform_wrapper: false
+
+      - name: Verify snapshots
+        run: ./scripts/verify-snapshots.sh

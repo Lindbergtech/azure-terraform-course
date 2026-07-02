@@ -1,0 +1,23 @@
+name: check-guides
+
+# Hermetic-tree tripwire. Nothing instructor-internal may appear anywhere in the
+# template tree; if a future sync ever leaks a reference, this fails the push.
+# Scope is the entire checkout (unlike the instructor-side run, which lints only
+# the publication surfaces).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check-guides:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint entire tree for internal references
+        run: ./scripts/check-guides.sh .

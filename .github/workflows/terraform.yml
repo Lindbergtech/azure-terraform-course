@@ -1,0 +1,92 @@
+name: terraform
+
+# OIDC-authenticated Terraform pipeline.
+#   pull_request → terraform plan, posted to the run's job summary.
+#   push to main → terraform apply -auto-approve.
+# Same partial backend as the local student (use_azuread_auth = true) — the
+# four backend values are injected from repo *variables* (not secrets, since
+# they aren't sensitive). Auth is workload identity federation; no client
+# secret exists. Wire it up by following the OIDC setup guide.
+
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write   # mint the OIDC token azure/login@v2 exchanges for an AAD token
+  contents: read
+  pull-requests: write   # post the plan back to the PR via job summary / checks UI
+
+concurrency:
+  # Serialise plan/apply against the shared state container. The local student
+  # also writes here; running plans in parallel against one tfstate blob is
+  # asking for lock errors.
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra
+
+    env:
+      # azapi + azurerm providers and the azurerm backend pick up OIDC from
+      # these vars + the GH-injected ACTIONS_ID_TOKEN_REQUEST_* pair. No need
+      # to touch providers.tf — the local `az login` path keeps working too.
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          # 1.11 is the floor — main.tf uses azapi's sensitive_body
+          # (write-only attribute), which lands in 1.11. 1.13.x is the
+          # latest stable line at time of pinning.
+          terraform_version: 1.13.x
+          terraform_wrapper: false
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform fmt check
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init
+        run: |
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ vars.TFSTATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TFSTATE_CONTAINER }}" \
+            -backend-config="key=${{ vars.TFSTATE_KEY }}" \
+            -backend-config="use_azuread_auth=true"
+
+      - name: Terraform validate
+        run: terraform validate
+
+      - name: Terraform plan
+        if: github.event_name == 'pull_request'
+        run: |
+          set -o pipefail
+          terraform plan -input=false -no-color -out=tfplan | tee plan.txt
+          {
+            echo '## Terraform plan'
+            echo ''
+            echo '<sub>State backend: `${{ vars.TFSTATE_STORAGE_ACCOUNT }}/${{ vars.TFSTATE_CONTAINER }}/${{ vars.TFSTATE_KEY }}`</sub>'
+            echo ''
+            echo '```terraform'
+            cat plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Terraform apply
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: terraform apply -auto-approve -input=false

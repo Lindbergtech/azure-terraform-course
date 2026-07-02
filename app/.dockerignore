@@ -1,0 +1,5 @@
+main_test.go
+*_test.go
+Dockerfile
+.dockerignore
+app
